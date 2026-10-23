@@ -1,7 +1,7 @@
 import {initialState,monthKey,setPaid,makeBackup,readBackup,validateState} from './model.mjs';
 import {openStore,loadState,saveState,listSnapshots} from './storage.mjs';
 const $=id=>document.getElementById(id);
-let state=initialState(),revision=0,month=monthKey(),filter='all',busy=true,ready=false,editId=null,audioContext,toastTimer;
+let state=initialState(),revision=0,month=monthKey(),filter='all',busy=true,ready=false,editId=null,pendingAudio,toastTimer;
 const formatMonth=value=>new Intl.DateTimeFormat('pt-PT',{month:'long',year:'numeric'}).format(new Date(`${value}-15T12:00:00`));
 const formatDate=value=>new Intl.DateTimeFormat('pt-PT',{dateStyle:'short',timeStyle:'short'}).format(new Date(value));
 function toast(message){$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6000);}
@@ -27,27 +27,51 @@ function render(){
 }
 async function commit(next,label){if(busy||!ready)return false;busy=true;render();try{revision=await saveState(next,revision,label);state=next;return true;}catch(e){toast(e.message);return false;}finally{busy=false;render();}}
 function confirmAction(title,text){return new Promise(resolve=>{const d=$('confirm-dialog');$('confirm-title').textContent=title;$('confirm-text').textContent=text;$('confirm-yes').onclick=()=>{d.close('yes');};$('confirm-no').onclick=()=>d.close('no');d.onclose=()=>resolve(d.returnValue==='yes');d.returnValue='';d.showModal();});}
-function ring(){
- if(!state.sound)return;
- try{audioContext??=new(window.AudioContext||window.webkitAudioContext)();audioContext.resume().catch(()=>{});const t=audioContext.currentTime;
- // A mechanical click followed by the bright double bell of a till.
- for(const [frequency,start,duration,volume] of [[180,0,.06,.12],[2400,.07,.65,.12],[3200,.08,.45,.055],[3000,.23,.8,.1],[4000,.24,.65,.035]]){const o=audioContext.createOscillator(),g=audioContext.createGain();o.type=frequency===180?'square':'sine';o.frequency.value=frequency;g.gain.setValueAtTime(volume,t+start);g.gain.exponentialRampToValueAtTime(.001,t+start+duration);o.connect(g);g.connect(audioContext.destination);o.start(t+start);o.stop(t+start+duration);}
- }catch{ /* Payments still work when audio is unavailable. */ }
+// Start a fresh audio session in each user gesture. Safari can leave an old
+// AudioContext interrupted even when resume() resolves or never settles.
+function prepareAudio(){
+ pendingAudio?.close();
+ try{
+  const Context=window.AudioContext||window.webkitAudioContext;
+  const context=new Context();let closed=false;
+  const audio={context,ready:null,close(){if(closed)return;closed=true;clearTimeout(audio.timeout);context.close().catch(()=>{});if(pendingAudio===audio)pendingAudio=null;}};
+  pendingAudio=audio;
+  // Keep the new context active while the payment is saved, without a sound.
+  const silence=context.createBufferSource();silence.buffer=context.createBuffer(1,context.sampleRate*3,context.sampleRate);silence.connect(context.destination);silence.start();
+  audio.ready=Promise.race([context.resume().then(()=>context.state==='running').catch(()=>false),new Promise(resolve=>setTimeout(()=>resolve(false),1200))]);
+  audio.timeout=setTimeout(()=>audio.close(),5000);
+  return audio;
+ }catch{return null;}
+}
+async function ring(audio){
+ if(!state.sound){audio?.close();return;}
+ if(!audio || !(await audio.ready)){audio?.close();toast('O som não arrancou. Confirma o modo silencioso e o volume do iPhone.');return;}
+ try{
+  const context=audio.context;const t=context.currentTime+.015;
+  for(const [frequency,start,duration,volume] of [[180,0,.06,.12],[2400,.07,.65,.12],[3200,.08,.45,.055],[3000,.23,.8,.1],[4000,.24,.65,.035]]){
+   const o=context.createOscillator(),g=context.createGain();o.type=frequency===180?'square':'sine';o.frequency.value=frequency;
+   g.gain.setValueAtTime(volume,t+start);g.gain.exponentialRampToValueAtTime(.001,t+start+duration);o.connect(g);g.connect(context.destination);o.start(t+start);o.stop(t+start+duration);
+   o.onended=()=>{o.disconnect();g.disconnect();};
+  }
+  clearTimeout(audio.timeout);audio.timeout=setTimeout(()=>audio.close(),1600);
+ }catch{audio.close();toast('Não foi possível reproduzir o som. Tenta em «Testar som» nas definições.');}
 }
 async function togglePaid(a){
  if(busy||!ready)return;const selectedMonth=month;const wasPaid=!!state.payments[selectedMonth]?.[a.id];
  if(wasPaid&&!(await confirmAction('Anular pagamento?',`${a.name} volta a ficar por pagar em ${formatMonth(selectedMonth)}.`)))return;
- // Unlock audio during the user gesture, before waiting for IndexedDB.
- if(!wasPaid&&state.sound){try{audioContext??=new(window.AudioContext||window.webkitAudioContext)();await audioContext.resume();}catch{}}
+ // Resume synchronously inside the tap; saving never waits for audio.
+ const audio=!wasPaid&&state.sound?prepareAudio():null;
  if(await commit(setPaid(state,selectedMonth,a.id,!wasPaid),wasPaid?'Antes de anular um pagamento':'Antes de registar um pagamento')){
-  if(wasPaid)toast('Pagamento anulado.');else{ring();$('surprise-detail').textContent=`${a.name} já está em dia em ${formatMonth(selectedMonth)}.`;$('surprise').showModal();}
- }
+  if(wasPaid)toast('Pagamento anulado.');else{ring(audio);$('surprise-detail').textContent=`${a.name} já está em dia em ${formatMonth(selectedMonth)}.`;$('surprise').showModal();}
+ }else audio?.close();
 }
 function renderManagement(){const list=$('manage-students');list.replaceChildren();for(const a of state.students){const row=node('div',`manage-row${a.archived?' archived':''}`);row.append(node('span','',a.name+(a.archived?' · arquivado':'')));const edit=node('button','','Editar');edit.disabled=busy||!ready;edit.onclick=()=>openEdit(a);const archive=node('button','',a.archived?'Reativar':'Arquivar');archive.disabled=busy||!ready;archive.setAttribute('aria-label',`${a.archived?'Reativar':'Arquivar'} ${a.name}`);archive.onclick=async()=>{if(!a.archived&&!(await confirmAction('Arquivar aluno?',`${a.name} sai da lista. Os pagamentos anteriores ficam guardados e podes reativar o aluno a qualquer momento.`)))return;const next=structuredClone(state);next.students.find(s=>s.id===a.id).archived=!a.archived;await commit(next,'Antes de alterar a lista de alunos');};row.append(edit,archive);list.append(row);}}
 function openEdit(a){editId=a?.id??null;$('edit-title').textContent=a?'Editar aluno':'Novo aluno';$('student-name').value=a?.name??'';$('edit-dialog').showModal();$('student-name').focus();}
 $('edit-form').onsubmit=async event=>{event.preventDefault();const name=$('student-name').value.trim();if(!name)return;const next=structuredClone(state);if(editId)next.students.find(a=>a.id===editId).name=name;else next.students.push({id:crypto.randomUUID(),name,archived:false});if(await commit(next,'Antes de editar alunos'))$('edit-dialog').close();};
 $('add-student').onclick=()=>openEdit();
-$('sound').onchange=async()=>{const next=structuredClone(state);next.sound=$('sound').checked;if(await commit(next,'Antes de alterar o som')){if(next.sound)ring();}};
+$('sound').onchange=async()=>{const next=structuredClone(state);next.sound=$('sound').checked;const audio=next.sound?prepareAudio():null;if(await commit(next,'Antes de alterar o som')){if(next.sound)ring(audio);else pendingAudio?.close();}else audio?.close();};
+$('test-sound').onclick=()=>{if(!state.sound){toast('Liga o som no interruptor acima para testar.');return;}ring(prepareAudio());};
+document.addEventListener('visibilitychange',()=>{if(document.hidden)pendingAudio?.close();});
 function changeMonth(delta){const d=new Date(`${month}-15T12:00:00`);d.setMonth(d.getMonth()+delta);if(d.getFullYear()<1900||d.getFullYear()>9999)return;month=monthKey(d);render();}
 $('previous').onclick=()=>changeMonth(-1);$('next').onclick=()=>changeMonth(1);
 $('month-title').onclick=()=>{$('month-picker').hidden=!$('month-picker').hidden;if(!$('month-picker').hidden)$('month-picker').focus();};
