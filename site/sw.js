@@ -1,5 +1,5 @@
-const CACHE='carla-pagamentos-shell-v2';
-const ASSETS=['./','./index.html','./styles.css','./app.mjs','./model.mjs','./storage.mjs','./manifest.webmanifest','./icons/icon.svg','./icons/icon-192.png','./icons/icon-512.png','./icons/apple-touch-icon.png'];
+const CACHE='carla-pagamentos-shell-v7';
+const ASSETS=['./','./index.html','./styles.css','./app.mjs','./model.mjs','./storage.mjs','./manifest.webmanifest','./icons/icon-192.png','./icons/icon-512.png','./icons/apple-touch-icon.png'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS))));
 self.addEventListener('activate',event=>event.waitUntil(Promise.all([caches.keys().then(keys=>Promise.all(keys.filter(key=>key.startsWith('carla-pagamentos-shell-')&&key!==CACHE).map(key=>caches.delete(key)))),self.clients.claim()])));
 self.addEventListener('message',event=>{if(event.data==='ACTIVATE')self.skipWaiting();});

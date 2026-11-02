@@ -1,0 +1,8 @@
+*.csv
+*.numbers
+*.zip
+*.json
+*backup*.json
+*pagamentos-20*.json
+node_modules/
+.DS_Store

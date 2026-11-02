@@ -1,0 +1,30 @@
+<!doctype html><html lang="pt"><meta charset="utf-8"><title>Testes locais CARLA</title><style>body{font:16px system-ui;background:#10151f;color:#eef;padding:24px}pre{white-space:pre-wrap}a{color:#cbf}</style><h1>Testes de armazenamento</h1><pre id="result">A testar…</pre><a href="../site/">Abrir aplicação com alunos fictícios de teste</a><script type="module">
+import {openStore,loadState,saveState,listSnapshots} from '../site/storage.mjs';
+import {validateState,setLessons,setPaid,clearPayments,makeBackup,readBackup} from '../site/model.mjs';
+const lines=[],output=document.querySelector('#result');
+const ok=(condition,message)=>{if(!condition)throw Error(message);lines.push('PASSOU: '+message);output.textContent=lines.join('\n');};
+const request=r=>new Promise((resolve,reject)=>{r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
+try{
+ const raw=await request(indexedDB.open('carla-pagamentos-v1',1));
+ // This runner is only for the dedicated local test origin. Never delete data.
+ if(!raw.objectStoreNames.contains('current')){raw.close();throw Error('Abre primeiro ../site/ uma vez para criar os armazéns de teste.');}
+ const existing=await request(raw.transaction('current','readonly').objectStore('current').get('state'));
+ if(existing?.data.students.some(a=>!a.id.startsWith('qa-')))throw Error('Este endereço contém dados que não são de teste. Nada foi alterado.');
+ const legacy={version:1,students:['A','B','C','D','E','F'].map((letter,i)=>({id:'qa-'+i,name:'Aluno de teste '+letter,archived:false})),payments:{'2026-10':{'qa-0':'2026-10-20T12:00:00Z'},'2026-11':{'qa-1':'2026-11-01T12:00:00Z'}},sound:true,lastExport:null};
+ await new Promise((resolve,reject)=>{const tx=raw.transaction('current','readwrite');tx.objectStore('current').put({revision:1,data:legacy},'state');tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});raw.close();
+ await openStore();let loaded=await loadState();ok(loaded.migrated&&loaded.data.version===2,'Leitura e migração da estrutura antiga');
+ let s=loaded.data,revision=await saveState(s,loaded.revision,'Migração de teste');
+ let versions=await listSnapshots();ok(versions.some(v=>v.data.version===1),'Versão original guardada antes da migração');
+ for(let i=0;i<36;i++){s.students[0].rateCents=1000+i;revision=await saveState(s,revision,'Alteração de teste '+i);}
+ versions=await listSnapshots();ok(versions.filter(v=>v.id!=='original-v1').length===30,'Retenção das últimas 30 versões');ok(versions.some(v=>v.id==='original-v1'&&v.data.version===1),'Cópia original preservada além das 30 versões');
+ let conflict=false;try{await saveState(s,revision-1,'Conflito de teste');}catch{conflict=true;}ok(conflict,'Conflito entre janelas rejeitado');ok((await loadState()).revision===revision,'Conflito não altera a revisão nem os dados');
+ const countBefore=(await listSnapshots()).length;let invalid=false;try{await saveState({...s,students:[{id:'bad'}]},revision,'Inválido');}catch{invalid=true;}ok(invalid&&(await listSnapshots()).length===countBefore,'Dados inválidos não substituem nem criam cópias');
+ s=validateState(legacy);for(const a of s.students){s.students.find(x=>x.id===a.id).rateCents=2000;s.lessons['2026-11']??={};s.lessons['2026-11'][a.id]={count:3,rateCents:2000};}
+ s=setPaid(s,'2026-11','qa-0',true);revision=await saveState(s,revision,'Preparar interface de teste');
+ ok((await loadState()).data.payments['2026-10']['qa-0']===legacy.payments['2026-10']['qa-0'],'Histórico de outro mês preservado');
+ const backup=readBackup(JSON.stringify(makeBackup(s)));ok(JSON.stringify(backup)===JSON.stringify(s),'Exportação e recuperação JSON sem perdas');
+ const cleared=clearPayments(s,'2026-11');revision=await saveState(cleared,revision,'Limpar teste');versions=await listSnapshots();const previous=versions.find(v=>v.label==='Limpar teste');ok(!!previous.data.payments['2026-11']['qa-0'],'Limpeza guarda versão com pagamentos recuperáveis');
+ revision=await saveState(validateState(previous.data),revision,'Recuperar teste');ok(!!(await loadState()).data.payments['2026-11']['qa-0'],'Recuperação de versão local repõe os pagamentos');
+ lines.push('\nTESTES CONCLUÍDOS — dados fictícios prontos para testar a interface.');output.textContent=lines.join('\n');
+}catch(error){output.textContent=lines.join('\n')+'\nFALHOU: '+error.stack;}
+</script></html>
