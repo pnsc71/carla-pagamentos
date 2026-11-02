@@ -1,14 +1,14 @@
 {
   "id": "./",
-  "name": "Carla — Pagamentos",
+  "name": "CARLA — Gestão de Pagamentos",
   "short_name": "Carla",
   "description": "Os pagamentos das tuas aulas, com tudo no sítio.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f8f7f4",
-  "theme_color": "#f8f7f4",
+  "background_color": "#10151f",
+  "theme_color": "#10151f",
   "icons": [
     {
       "src": "./icons/icon-192.png",
